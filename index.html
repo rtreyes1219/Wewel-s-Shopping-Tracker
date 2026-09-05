@@ -187,7 +187,6 @@
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      // Convert canvas frame to Base64 image
       const base64Image = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
 
       status.innerText = 'Analyzing price tag with Gemini Vision...';
@@ -200,7 +199,7 @@
             contents: [{
               parts: [
                 {
-                  text: "Analyze this retail price tag. Extract the product item name and the final total price. Return ONLY a raw JSON object with keys 'name' (string) and 'price' (number). Do not wrap inside Markdown formatting or backticks."
+                  text: "Read this retail price tag image carefully. Extract the item name and the prominent main selling price (TOTAL PRICE or final item price). Respond in JSON format with 'name' and 'price' fields."
                 },
                 {
                   inline_data: {
@@ -209,7 +208,10 @@
                   }
                 }
               ]
-            }]
+            }],
+            generationConfig: {
+              response_mime_type: "application/json"
+            }
           })
         });
 
@@ -218,9 +220,12 @@
         if (data.candidates && data.candidates[0].content.parts[0].text) {
           let rawText = data.candidates[0].content.parts[0].text.trim();
           
-          // Clean Markdown block quotes if Gemini includes them
-          rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-          
+          // Fallback parsing: extract JSON using regular expressions if extra characters exist
+          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            rawText = jsonMatch[0];
+          }
+
           const result = JSON.parse(rawText);
           
           addItem(result.name || 'Scanned Item', result.price || 0.00);
@@ -231,7 +236,7 @@
 
         setTimeout(() => status.innerText = '', 3000);
       } catch (err) {
-        status.innerText = 'Gemini API Error: Check key or connection.';
+        status.innerText = 'API Error: Check API Key or connection.';
         console.error(err);
       }
     }

@@ -29,22 +29,22 @@
     button { background: var(--primary); color: white; border: none; font-weight: 600; cursor: pointer; min-height: 44px; }
     button:active { opacity: 0.9; }
 
-    .camera-box { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 220px; }
-    video { width: 100%; max-height: 240px; object-fit: cover; }
+    /* Doubled camera container height */
+    .camera-box { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 440px; }
+    video { width: 100%; max-height: 480px; object-fit: cover; }
     
-    /* Target Overlay Box */
     .scan-guide {
       position: absolute;
-      width: 70%;
-      height: 50%;
+      width: 85%;
+      height: 65%;
       border: 3px solid #10b981;
       border-radius: 8px;
-      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
       pointer-events: none;
     }
 
     .scan-btn { margin-top: 0.5rem; background: #059669; }
-    .ocr-status { font-size: 0.8rem; color: #059669; text-align: center; margin-top: 0.4rem; font-weight: bold; }
+    .ocr-status { font-size: 0.85rem; color: #059669; text-align: center; margin-top: 0.4rem; font-weight: bold; }
 
     .item-row { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0; border-bottom: 1px solid #f1f5f9; gap: 0.5rem; }
     .item-inputs { display: flex; gap: 0.4rem; flex: 1; }
@@ -86,7 +86,7 @@
       <label for="appsScriptUrl">Google Apps Script API Endpoint</label>
       <input type="text" id="appsScriptUrl" placeholder="Paste your /exec Web App URL here..." style="margin-bottom: 0.75rem;">
 
-      <label>Target Price Tag inside Green Box</label>
+      <label>Target Big Price inside Green Box</label>
       <div class="camera-box">
         <video id="webcam" autoplay playsinline></video>
         <div class="scan-guide"></div>
@@ -94,8 +94,7 @@
       <button class="scan-btn" onclick="captureAndScan()">Scan Price Tag</button>
       <div id="ocrStatus" class="ocr-status"></div>
       
-      <!-- Debug Crop View -->
-      <canvas id="captureCanvas" style="width: 100%; border-radius: 6px; margin-top: 0.5rem; display: none;"></canvas>
+      <canvas id="captureCanvas" style="display: none;"></canvas>
     </div>
 
     <div class="card">
@@ -138,7 +137,14 @@
 
     async function initCamera() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        const constraints = {
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          }
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         document.getElementById('webcam').srcObject = stream;
       } catch (err) {
         document.getElementById('ocrStatus').innerText = 'Camera access blocked or unavailable.';
@@ -172,27 +178,26 @@
         return;
       }
 
-      // 1. Crop only the center area bounded by the green box
-      const cropWidth = video.videoWidth * 0.7;
-      const cropHeight = video.videoHeight * 0.5;
+      // Crop center guide area
+      const cropWidth = video.videoWidth * 0.85;
+      const cropHeight = video.videoHeight * 0.65;
       const cropX = (video.videoWidth - cropWidth) / 2;
       const cropY = (video.videoHeight - cropHeight) / 2;
 
       canvas.width = cropWidth;
       canvas.height = cropHeight;
-      canvas.style.display = 'block';
 
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
-      status.innerText = 'Scanning price tag...';
+      status.innerText = 'Analyzing largest text...';
 
       try {
         const worker = await Tesseract.createWorker('eng');
         const ret = await worker.recognize(canvas);
         await worker.terminate();
 
-        parseOCRResult(ret.data.text);
+        processBoundingBoxResult(ret.data);
         status.innerText = 'Scan complete!';
         setTimeout(() => status.innerText = '', 3000);
       } catch (err) {
@@ -200,35 +205,45 @@
       }
     }
 
-    function parseOCRResult(text) {
-      // Normalize string
-      let cleanStr = text.replace(/,/g, '.');
+    function processBoundingBoxResult(data) {
+      let candidateNumbers = [];
 
-      // 1. Prioritize numbers with explicit decimal values (e.g. 89.75)
-      const decimalRegex = /\b(\d+\.\d{2})\b/g;
-      let matches = [];
-      let match;
+      // Iterate through detected words and check bounding boxes to find largest text
+      if (data && data.words) {
+        data.words.forEach(w => {
+          let cleanText = w.text.replace(/,/g, '.').replace(/[^0-9\.]/g, '');
+          let numVal = parseFloat(cleanText);
 
-      while ((match = decimalRegex.exec(cleanStr)) !== null) {
-        let val = parseFloat(match[1]);
-        if (val > 1.0 && val < 50000) {
-          matches.push(val);
-        }
+          if (!isNaN(numVal) && numVal > 0.5) {
+            let bbox = w.bbox;
+            let height = bbox.y1 - bbox.y0; // Word font height in pixels
+            candidateNumbers.push({
+              value: numVal,
+              height: height,
+              text: w.text
+            });
+          }
+        });
       }
 
       let price = 0.00;
 
-      if (matches.length > 0) {
-        price = Math.max(...matches);
+      if (candidateNumbers.length > 0) {
+        // Sort by font height (descending) to grab the largest visual number
+        candidateNumbers.sort((a, b) => b.height - a.height);
+        price = candidateNumbers[0].value;
       } else {
-        // Fallback: look for digits labeled explicitly as TOTAL or PRICE
-        const labeledRegex = /(?:TOTAL|PRICE|89)[\s\:\$₱]*(\d+(?:\.\d{1,2})?)/i;
-        const labeledMatch = cleanStr.match(labeledRegex);
-        if (labeledMatch) price = parseFloat(labeledMatch[1]);
+        // Backup fallback
+        let cleanText = data.text.replace(/,/g, '.');
+        let matches = cleanText.match(/\b\d+(\.\d{1,2})?\b/g);
+        if (matches) {
+          let nums = matches.map(n => parseFloat(n)).filter(n => n > 0.5);
+          if (nums.length > 0) price = Math.max(...nums);
+        }
       }
 
       // Extract item name
-      let nameText = text.replace(/[0-9\₱\$\£\€\¥\.\,]/g, ' ').replace(/\s+/g, ' ').trim();
+      let nameText = data.text.replace(/[0-9\₱\$\£\€\¥\.\,]/g, ' ').replace(/\s+/g, ' ').trim();
       let name = nameText.split(' ').filter(w => w.length > 2).slice(0, 3).join(' ') || 'Scanned Item';
 
       addItem(name, price);

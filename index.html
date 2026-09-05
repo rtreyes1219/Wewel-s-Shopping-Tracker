@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Smart Shopping Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --danger: #dc2626;
+      --success: #16a34a;
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #0f172a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding-bottom: 90px; }
+
+    .header { background: var(--primary); color: white; padding: 1rem; text-align: center; font-weight: bold; font-size: 1.2rem; }
+    .container { padding: 0.75rem; max-width: 600px; margin: 0 auto; }
+
+    .card { background: var(--card); border-radius: 12px; padding: 1rem; margin-bottom: 0.75rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+
+    label { font-size: 0.8rem; font-weight: 600; color: #64748b; display: block; margin-bottom: 0.25rem; }
+    input, select, button { width: 100%; padding: 0.6rem; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 0.95rem; outline: none; }
+    button { background: var(--primary); color: white; border: none; font-weight: 600; cursor: pointer; min-height: 44px; }
+    button:active { opacity: 0.9; }
+
+    .camera-box { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; align-items: center; min-height: 200px; justify-content: center; }
+    video { width: 100%; max-height: 220px; object-fit: cover; }
+    .scan-btn { margin-top: 0.5rem; background: #059669; }
+
+    .ocr-status { font-size: 0.8rem; color: #059669; text-align: center; margin-top: 0.4rem; font-weight: bold; }
+
+    .item-row { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0; border-bottom: 1px solid #f1f5f9; gap: 0.5rem; }
+    .item-inputs { display: flex; gap: 0.4rem; flex: 1; }
+    .item-inputs input[type="text"] { flex: 2; }
+    .item-inputs input[type="number"] { flex: 1; }
+    .qty-btn { width: 32px; height: 32px; padding: 0; border-radius: 50%; background: #e2e8f0; color: #334155; }
+    .delete-btn { width: 36px; background: var(--danger); color: white; }
+
+    .summary-bar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--card); padding: 0.75rem 1rem; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; max-width: 600px; margin: 0 auto; }
+    .total-val { font-size: 1.3rem; font-weight: bold; }
+    .budget-alert { color: var(--danger) !important; animation: pulse 1s infinite alternate; }
+
+    @keyframes pulse { from { opacity: 1; } to { opacity: 0.5; } }
+  </style>
+</head>
+<body>
+
+  <div class="header">Smart Shopping Tracker</div>
+
+  <div class="container">
+    <div class="card grid-2">
+      <div>
+        <label for="countrySelect">Country / Currency</label>
+        <select id="countrySelect" onchange="updateCurrency()">
+          <option value="PH|₱|en-PH">Philippines (₱)</option>
+          <option value="US|$|en-US">United States ($)</option>
+          <option value="EU|€|de-DE">Eurozone (€)</option>
+          <option value="GB|£|en-GB">United Kingdom (£)</option>
+          <option value="JP|¥|ja-JP">Japan (¥)</option>
+        </select>
+      </div>
+      <div>
+        <label for="budgetInput">Budget Limit</label>
+        <input type="number" id="budgetInput" value="2500" step="0.01" oninput="calculateTotal()">
+      </div>
+    </div>
+
+    <div class="card">
+      <label for="appsScriptUrl">Google Apps Script API Endpoint</label>
+      <input type="text" id="appsScriptUrl" placeholder="Paste your /exec Web App URL here..." style="margin-bottom: 0.75rem;">
+
+      <label>Live Camera Price Tag OCR</label>
+      <div class="camera-box">
+        <video id="webcam" autoplay playsinline></video>
+      </div>
+      <button class="scan-btn" onclick="captureAndScan()">Scan Price Tag</button>
+      <div id="ocrStatus" class="ocr-status"></div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 0.5rem;">
+        <label style="margin:0;">Shopping List</label>
+        <button onclick="addItem()" style="width:auto; padding: 0.2rem 0.6rem; font-size:0.8rem;">+ Manual Item</button>
+      </div>
+      <div id="itemList"></div>
+    </div>
+
+    <button onclick="syncToSheets()" style="background: var(--success); width: 100%; margin-top: 0.5rem;">Sync Trip to Google Sheets</button>
+  </div>
+
+  <div class="summary-bar">
+    <div>
+      <span style="font-size:0.75rem; color:#64748b;">Total Spent:</span>
+      <div id="totalDisplay" class="total-val">₱0.00</div>
+    </div>
+    <div style="text-align:right;">
+      <span style="font-size:0.75rem; color:#64748b;">Remaining:</span>
+      <div id="remainingDisplay" class="total-val" style="color:var(--success);">₱2,500.00</div>
+    </div>
+  </div>
+
+  <canvas id="captureCanvas" style="display:none;"></canvas>
+
+  <script>
+    let currencySymbol = '₱';
+    let locale = 'en-PH';
+    let items = [];
+    let audioCtx = null;
+
+    window.addEventListener('DOMContentLoaded', () => {
+      initCamera();
+      updateCurrency();
+      
+      const savedUrl = localStorage.getItem('shopping_script_url');
+      if (savedUrl) {
+        document.getElementById('appsScriptUrl').value = savedUrl;
+      }
+    });
+
+    async function initCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        document.getElementById('webcam').srcObject = stream;
+      } catch (err) {
+        document.getElementById('ocrStatus').innerText = 'Camera access blocked or unavailable.';
+      }
+    }
+
+    function updateCurrency() {
+      const val = document.getElementById('countrySelect').value.split('|');
+      currencySymbol = val[1];
+      locale = val[2];
+      calculateTotal();
+    }
+
+    function formatMoney(amount) {
+      return new Intl.NumberFormat(locale, { style: 'currency', currency: getCurrencyCode() }).format(amount);
+    }
+
+    function getCurrencyCode() {
+      const countryMap = { 'PH':'PHP', 'US':'USD', 'EU':'EUR', 'GB':'GBP', 'JP':'JPY' };
+      const country = document.getElementById('countrySelect').value.split('|')[0];
+      return countryMap[country] || 'PHP';
+    }
+
+    async function captureAndScan() {
+      const video = document.getElementById('webcam');
+      const canvas = document.getElementById('captureCanvas');
+      const status = document.getElementById('ocrStatus');
+
+      if (!video.srcObject) {
+        status.innerText = 'Camera stream not active.';
+        return;
+      }
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      status.innerText = 'Scanning price tag...';
+
+      try {
+        const worker = await Tesseract.createWorker('eng');
+        const ret = await worker.recognize(canvas);
+        await worker.terminate();
+
+        parseOCRResult(ret.data.text);
+        status.innerText = 'Scan complete!';
+        setTimeout(() => status.innerText = '', 3000);
+      } catch (err) {
+        status.innerText = 'OCR Parsing failed.';
+      }
+    }
+
+    function parseOCRResult(text) {
+      const priceRegex = /(?:[\$\£\€\₱\₹]|\b)\s?(\d+[\.,]\d{2})\b/;
+      const match = text.match(priceRegex);
+
+      let price = match ? parseFloat(match[1].replace(',', '.')) : 0.00;
+      let cleanText = text.replace(/[^a-zA-Z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+      let name = cleanText.split(' ').slice(0, 3).join(' ') || 'Scanned Item';
+
+      addItem(name, price);
+    }
+
+    function addItem(name = 'New Item', price = 0.00, qty = 1) {
+      items.push({ id: Date.now(), name, price: parseFloat(price), qty: parseInt(qty) });
+      renderItems();
+      calculateTotal();
+    }
+
+    function removeItem(id) {
+      items = items.filter(item => item.id !== id);
+      renderItems();
+      calculateTotal();
+    }
+
+    function updateItem(id, field, value) {
+      const item = items.find(i => i.id === id);
+      if (item) {
+        item[field] = field === 'name' ? value : parseFloat(value) || 0;
+        calculateTotal();
+      }
+    }
+
+    function renderItems() {
+      const list = document.getElementById('itemList');
+      list.innerHTML = '';
+      items.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'item-row';
+        div.innerHTML = `
+          <div class="item-inputs">
+            <input type="text" value="${item.name}" onchange="updateItem(${item.id}, 'name', this.value)">
+            <input type="number" step="0.01" value="${item.price}" onchange="updateItem(${item.id}, 'price', this.value)">
+          </div>
+          <button class="qty-btn" onclick="adjustQty(${item.id}, -1)">-</button>
+          <span style="font-size:0.85rem; font-weight:bold;">${item.qty}</span>
+          <button class="qty-btn" onclick="adjustQty(${item.id}, 1)">+</button>
+          <button class="delete-btn" onclick="removeItem(${item.id})">✕</button>
+        `;
+        list.appendChild(div);
+      });
+    }
+
+    function adjustQty(id, delta) {
+      const item = items.find(i => i.id === id);
+      if (item) {
+        item.qty = Math.max(1, item.qty + delta);
+        renderItems();
+        calculateTotal();
+      }
+    }
+
+    function calculateTotal() {
+      const budget = parseFloat(document.getElementById('budgetInput').value) || 0;
+      const total = items.reduce((sum, item) => sum + (item.price * item.qty), 0);
+      const remaining = budget - total;
+
+      const totalEl = document.getElementById('totalDisplay');
+      const remainingEl = document.getElementById('remainingDisplay');
+
+      totalEl.innerText = formatMoney(total);
+      remainingEl.innerText = formatMoney(remaining);
+
+      if (total > budget && budget > 0) {
+        totalEl.classList.add('budget-alert');
+        remainingEl.style.color = 'var(--danger)';
+        triggerAudioAlert();
+      } else {
+        totalEl.classList.remove('budget-alert');
+        remainingEl.style.color = 'var(--success)';
+      }
+    }
+
+    function triggerAudioAlert() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.2);
+    }
+
+    function syncToSheets() {
+      const scriptUrl = document.getElementById('appsScriptUrl').value.trim();
+      if (!scriptUrl) {
+        alert('Please paste your Google Apps Script Web App URL in the input field above.');
+        return;
+      }
+
+      localStorage.setItem('shopping_script_url', scriptUrl);
+
+      const payload = {
+        country: document.getElementById('countrySelect').value.split('|')[0],
+        currency: currencySymbol,
+        budget: parseFloat(document.getElementById('budgetInput').value) || 0,
+        totalSpent: items.reduce((sum, item) => sum + (item.price * item.qty), 0),
+        items: items
+      };
+
+      fetch(scriptUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      .then(() => alert('Sync request sent to Google Sheets!'))
+      .catch(err => alert('Sync error: ' + err));
+    }
+  </script>
+</body>
+</html>

@@ -180,12 +180,28 @@
     }
 
     function parseOCRResult(text) {
-      const priceRegex = /(?:[\$\£\€\₱\₹]|\b)\s?(\d+[\.,]\d{2})\b/;
-      const match = text.match(priceRegex);
+      // Normalize text: replace commas with dots, remove spaces between currency symbols and digits
+      let cleanStr = text.replace(/,/g, '.').replace(/(₱|\$|£|€|¥)\s+/g, '$1');
 
-      let price = match ? parseFloat(match[1].replace(',', '.')) : 0.00;
-      let cleanText = text.replace(/[^a-zA-Z\s]/g, ' ').replace(/\s+/g, ' ').trim();
-      let name = cleanText.split(' ').slice(0, 3).join(' ') || 'Scanned Item';
+      // Match digits with decimals (e.g. 150.00) OR standalone numbers (e.g. 150 or ₱150)
+      const priceRegex = /(?:₱|\$|£|€|¥)?\s*(\d+(?:\.\d{1,2})?)/g;
+      let matches = [];
+      let match;
+
+      while ((match = priceRegex.exec(cleanStr)) !== null) {
+        let val = parseFloat(match[1]);
+        // Ignore tiny decimals or oversized barcode strings
+        if (val > 0.5 && val < 100000) {
+          matches.push(val);
+        }
+      }
+
+      // Pick the highest reasonable price captured on tag
+      let price = matches.length > 0 ? Math.max(...matches) : 0.00;
+
+      // Clean item name by removing extracted digits and symbols
+      let nameText = text.replace(/[0-9\₱\$\£\€\¥\.\,]/g, ' ').replace(/\s+/g, ' ').trim();
+      let name = nameText.split(' ').filter(w => w.length > 1).slice(0, 3).join(' ') || 'Scanned Item';
 
       addItem(name, price);
     }

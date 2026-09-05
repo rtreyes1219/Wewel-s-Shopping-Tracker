@@ -29,10 +29,21 @@
     button { background: var(--primary); color: white; border: none; font-weight: 600; cursor: pointer; min-height: 44px; }
     button:active { opacity: 0.9; }
 
-    .camera-box { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; align-items: center; min-height: 200px; justify-content: center; }
-    video { width: 100%; max-height: 220px; object-fit: cover; }
-    .scan-btn { margin-top: 0.5rem; background: #059669; }
+    .camera-box { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 220px; }
+    video { width: 100%; max-height: 240px; object-fit: cover; }
+    
+    /* Target Overlay Box */
+    .scan-guide {
+      position: absolute;
+      width: 70%;
+      height: 50%;
+      border: 3px solid #10b981;
+      border-radius: 8px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+      pointer-events: none;
+    }
 
+    .scan-btn { margin-top: 0.5rem; background: #059669; }
     .ocr-status { font-size: 0.8rem; color: #059669; text-align: center; margin-top: 0.4rem; font-weight: bold; }
 
     .item-row { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0; border-bottom: 1px solid #f1f5f9; gap: 0.5rem; }
@@ -75,12 +86,16 @@
       <label for="appsScriptUrl">Google Apps Script API Endpoint</label>
       <input type="text" id="appsScriptUrl" placeholder="Paste your /exec Web App URL here..." style="margin-bottom: 0.75rem;">
 
-      <label>Live Camera Price Tag OCR</label>
+      <label>Target Price Tag inside Green Box</label>
       <div class="camera-box">
         <video id="webcam" autoplay playsinline></video>
+        <div class="scan-guide"></div>
       </div>
       <button class="scan-btn" onclick="captureAndScan()">Scan Price Tag</button>
       <div id="ocrStatus" class="ocr-status"></div>
+      
+      <!-- Debug Crop View -->
+      <canvas id="captureCanvas" style="width: 100%; border-radius: 6px; margin-top: 0.5rem; display: none;"></canvas>
     </div>
 
     <div class="card">
@@ -104,8 +119,6 @@
       <div id="remainingDisplay" class="total-val" style="color:var(--success);">₱2,500.00</div>
     </div>
   </div>
-
-  <canvas id="captureCanvas" style="display:none;"></canvas>
 
   <script>
     let currencySymbol = '₱';
@@ -159,32 +172,23 @@
         return;
       }
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      
-      // 1. Draw frame
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      // 1. Crop only the center area bounded by the green box
+      const cropWidth = video.videoWidth * 0.7;
+      const cropHeight = video.videoHeight * 0.5;
+      const cropX = (video.videoWidth - cropWidth) / 2;
+      const cropY = (video.videoHeight - cropHeight) / 2;
 
-      // 2. Apply high-contrast black and white filter to sharpen digits
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imgData.data;
-      for (let i = 0; i < data.length; i += 4) {
-        let avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
-        let threshold = avg > 110 ? 255 : 0;
-        data[i] = threshold;
-        data[i + 1] = threshold;
-        data[i + 2] = threshold;
-      }
-      ctx.putImageData(imgData, 0, 0);
+      canvas.width = cropWidth;
+      canvas.height = cropHeight;
+      canvas.style.display = 'block';
+
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
 
       status.innerText = 'Scanning price tag...';
 
       try {
         const worker = await Tesseract.createWorker('eng');
-        await worker.setParameters({
-          tessedit_char_whitelist: '0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz$%₱ '
-        });
         const ret = await worker.recognize(canvas);
         await worker.terminate();
 
@@ -197,34 +201,33 @@
     }
 
     function parseOCRResult(text) {
+      // Normalize string
       let cleanStr = text.replace(/,/g, '.');
 
-      // 1. Match numbers explicitly formatted with a decimal point (e.g. 89.75)
+      // 1. Prioritize numbers with explicit decimal values (e.g. 89.75)
       const decimalRegex = /\b(\d+\.\d{2})\b/g;
-      let decimalMatches = [];
+      let matches = [];
       let match;
 
       while ((match = decimalRegex.exec(cleanStr)) !== null) {
         let val = parseFloat(match[1]);
-        if (val > 0.5 && val < 50000) {
-          decimalMatches.push(val);
+        if (val > 1.0 && val < 50000) {
+          matches.push(val);
         }
       }
 
       let price = 0.00;
 
-      if (decimalMatches.length > 0) {
-        price = Math.max(...decimalMatches);
+      if (matches.length > 0) {
+        price = Math.max(...matches);
       } else {
-        // 2. Fallback: match numbers near price keywords
-        const labeledRegex = /(?:TOTAL|PRICE|PC|AMOUNT)[\s\:\$₱]*(\d+(?:\.\d{1,2})?)/i;
+        // Fallback: look for digits labeled explicitly as TOTAL or PRICE
+        const labeledRegex = /(?:TOTAL|PRICE|89)[\s\:\$₱]*(\d+(?:\.\d{1,2})?)/i;
         const labeledMatch = cleanStr.match(labeledRegex);
-        if (labeledMatch) {
-          price = parseFloat(labeledMatch[1]);
-        }
+        if (labeledMatch) price = parseFloat(labeledMatch[1]);
       }
 
-      // Extract item title
+      // Extract item name
       let nameText = text.replace(/[0-9\₱\$\£\€\¥\.\,]/g, ' ').replace(/\s+/g, ' ').trim();
       let name = nameText.split(' ').filter(w => w.length > 2).slice(0, 3).join(' ') || 'Scanned Item';
 

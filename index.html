@@ -162,12 +162,29 @@
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
+      
+      // 1. Draw frame
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      // 2. Apply high-contrast black and white filter to sharpen digits
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imgData.data;
+      for (let i = 0; i < data.length; i += 4) {
+        let avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+        let threshold = avg > 110 ? 255 : 0;
+        data[i] = threshold;
+        data[i + 1] = threshold;
+        data[i + 2] = threshold;
+      }
+      ctx.putImageData(imgData, 0, 0);
 
       status.innerText = 'Scanning price tag...';
 
       try {
         const worker = await Tesseract.createWorker('eng');
+        await worker.setParameters({
+          tessedit_char_whitelist: '0123456789.ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz$%₱ '
+        });
         const ret = await worker.recognize(canvas);
         await worker.terminate();
 
@@ -180,28 +197,36 @@
     }
 
     function parseOCRResult(text) {
-      // Normalize text: replace commas with dots, remove spaces between currency symbols and digits
-      let cleanStr = text.replace(/,/g, '.').replace(/(₱|\$|£|€|¥)\s+/g, '$1');
+      let cleanStr = text.replace(/,/g, '.');
 
-      // Match digits with decimals (e.g. 150.00) OR standalone numbers (e.g. 150 or ₱150)
-      const priceRegex = /(?:₱|\$|£|€|¥)?\s*(\d+(?:\.\d{1,2})?)/g;
-      let matches = [];
+      // 1. Match numbers explicitly formatted with a decimal point (e.g. 89.75)
+      const decimalRegex = /\b(\d+\.\d{2})\b/g;
+      let decimalMatches = [];
       let match;
 
-      while ((match = priceRegex.exec(cleanStr)) !== null) {
+      while ((match = decimalRegex.exec(cleanStr)) !== null) {
         let val = parseFloat(match[1]);
-        // Ignore tiny decimals or oversized barcode strings
-        if (val > 0.5 && val < 100000) {
-          matches.push(val);
+        if (val > 0.5 && val < 50000) {
+          decimalMatches.push(val);
         }
       }
 
-      // Pick the highest reasonable price captured on tag
-      let price = matches.length > 0 ? Math.max(...matches) : 0.00;
+      let price = 0.00;
 
-      // Clean item name by removing extracted digits and symbols
+      if (decimalMatches.length > 0) {
+        price = Math.max(...decimalMatches);
+      } else {
+        // 2. Fallback: match numbers near price keywords
+        const labeledRegex = /(?:TOTAL|PRICE|PC|AMOUNT)[\s\:\$₱]*(\d+(?:\.\d{1,2})?)/i;
+        const labeledMatch = cleanStr.match(labeledRegex);
+        if (labeledMatch) {
+          price = parseFloat(labeledMatch[1]);
+        }
+      }
+
+      // Extract item title
       let nameText = text.replace(/[0-9\₱\$\£\€\¥\.\,]/g, ' ').replace(/\s+/g, ' ').trim();
-      let name = nameText.split(' ').filter(w => w.length > 1).slice(0, 3).join(' ') || 'Scanned Item';
+      let name = nameText.split(' ').filter(w => w.length > 2).slice(0, 3).join(' ') || 'Scanned Item';
 
       addItem(name, price);
     }

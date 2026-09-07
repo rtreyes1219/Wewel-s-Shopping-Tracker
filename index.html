@@ -71,9 +71,6 @@
     </div>
 
     <div class="card">
-      <label for="geminiApiKey">Gemini API Key</label>
-      <input type="password" id="geminiApiKey" placeholder="Paste your Gemini API Key here..." style="margin-bottom: 0.75rem;">
-
       <label for="appsScriptUrl">Google Apps Script API Endpoint</label>
       <input type="text" id="appsScriptUrl" placeholder="Paste your /exec Web App URL here..." style="margin-bottom: 0.75rem;">
 
@@ -123,11 +120,6 @@
       if (savedUrl) {
         document.getElementById('appsScriptUrl').value = savedUrl;
       }
-
-      const savedKey = localStorage.getItem('gemini_api_key');
-      if (savedKey) {
-        document.getElementById('geminiApiKey').value = savedKey;
-      }
     });
 
     async function initCamera() {
@@ -164,15 +156,15 @@
     }
 
     async function captureAndScan() {
-      const apiKey = document.getElementById('geminiApiKey').value.trim();
+      const scriptUrl = document.getElementById('appsScriptUrl').value.trim();
       const status = document.getElementById('ocrStatus');
 
-      if (!apiKey) {
-        alert('Please enter your Gemini API Key in the field above.');
+      if (!scriptUrl) {
+        alert('Please paste your Google Apps Script Endpoint URL first.');
         return;
       }
 
-      localStorage.setItem('gemini_api_key', apiKey);
+      localStorage.setItem('shopping_script_url', scriptUrl);
 
       const video = document.getElementById('webcam');
       const canvas = document.getElementById('captureCanvas');
@@ -189,55 +181,29 @@
 
       const base64Image = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
 
-      status.innerText = 'Analyzing price tag with Gemini...';
+      status.innerText = 'Sending frame to Google Apps Script & Gemini...';
 
       try {
-        // Switched endpoint to stable gemini-2.0-flash with JSON mode schema
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-        
-        const response = await fetch(endpoint, {
+        const response = await fetch(scriptUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            contents: [{
-              parts: [
-                {
-                  text: "Analyze this price tag image. Extract the item name and total numeric price. Return JSON matching: {\"name\": \"string\", \"price\": 0.00}"
-                },
-                {
-                  inline_data: {
-                    mime_type: "image/jpeg",
-                    data: base64Image
-                  }
-                }
-              ]
-            }],
-            generationConfig: {
-              responseMimeType: "application/json"
-            }
+            action: 'scanImage',
+            base64Image: base64Image
           })
         });
 
-        const data = await response.json();
+        const result = await response.json();
 
-        if (data.error) {
-          status.innerText = 'API Error: ' + data.error.message;
+        if (result.error) {
+          status.innerText = 'Server Error: ' + result.error;
           return;
         }
 
-        if (data.candidates && data.candidates[0].content.parts[0].text) {
-          let rawText = data.candidates[0].content.parts[0].text.trim();
-          
-          const result = JSON.parse(rawText);
-          
-          addItem(result.name || 'Scanned Item', result.price || 0.00);
-          status.innerText = 'Scan complete!';
-          setTimeout(() => status.innerText = '', 3000);
-        } else {
-          status.innerText = 'Unexpected response format: ' + JSON.stringify(data).slice(0, 80);
-        }
+        addItem(result.name || 'Scanned Item', result.price || 0.00);
+        status.innerText = 'Scan complete!';
+        setTimeout(() => status.innerText = '', 3000);
       } catch (err) {
-        status.innerText = 'Error: ' + err.message;
+        status.innerText = 'Scan error: ' + err.message;
         console.error(err);
       }
     }
@@ -339,6 +305,7 @@
       localStorage.setItem('shopping_script_url', scriptUrl);
 
       const payload = {
+        action: 'syncTrip',
         country: document.getElementById('countrySelect').value.split('|')[0],
         currency: currencySymbol,
         budget: parseFloat(document.getElementById('budgetInput').value) || 0,
@@ -348,8 +315,6 @@
 
       fetch(scriptUrl, {
         method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
       .then(() => alert('Sync request sent to Google Sheets!'))
